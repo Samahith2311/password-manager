@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vaultly - Password Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Vaultly</h1>
+
+    <!-- Screen 1: first-time setup -->
+    <section id="setup-screen" hidden>
+      <p class="hint">Create a master password. It encrypts everything in your vault and is never stored. If you forget it, your data cannot be recovered.</p>
+      <form id="setup-form">
+        <label for="setup-password">Master password</label>
+        <input id="setup-password" type="password" minlength="10" autocomplete="new-password" required>
+        <label for="setup-confirm">Confirm master password</label>
+        <input id="setup-confirm" type="password" autocomplete="new-password" required>
+        <p class="error" id="setup-error" role="alert"></p>
+        <button type="submit">Create vault</button>
+      </form>
+    </section>
+
+    <!-- Screen 2: unlock -->
+    <section id="unlock-screen" hidden>
+      <p class="hint">Enter your master password to unlock your vault.</p>
+      <form id="unlock-form">
+        <label for="unlock-password">Master password</label>
+        <input id="unlock-password" type="password" autocomplete="current-password" required>
+        <p class="error" id="unlock-error" role="alert"></p>
+        <button type="submit">Unlock</button>
+      </form>
+      <button type="button" id="erase-btn" class="link-btn">Erase vault and start over</button>
+    </section>
+
+    <!-- Screen 3: vault (placeholder for the next steps) -->
+    <section id="vault-screen" hidden>
+      <p class="success">Vault unlocked.</p>
+      <p class="hint">Your entries will appear here in the next step.</p>
+      <button type="button" id="lock-btn">Lock vault</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
