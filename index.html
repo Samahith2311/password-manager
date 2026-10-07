@@ -25,6 +25,7 @@
 
     <!-- Screen 2: unlock -->
     <section id="unlock-screen" hidden>
+      <p class="notice" id="lock-notice" role="status" hidden></p>
       <p class="hint">Enter your master password to unlock your vault.</p>
       <form id="unlock-form">
         <label for="unlock-password">Master password</label>
@@ -39,7 +40,18 @@
     <section id="vault-screen" hidden>
       <div class="vault-header">
         <h2>Your vault</h2>
-        <button type="button" id="lock-btn" class="secondary">Lock vault</button>
+        <div class="header-controls">
+          <label for="autolock-select">Auto-lock after</label>
+          <select id="autolock-select">
+            <option value="1">1 minute</option>
+            <option value="2">2 minutes</option>
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+          </select>
+          <button type="button" id="lock-btn" class="secondary">Lock vault</button>
+        </div>
       </div>
 
       <div class="toolbar">
@@ -61,6 +73,25 @@
         <label class="inline-check">
           <input type="checkbox" id="entry-show"> Show password
         </label>
+
+        <div class="strength" aria-live="polite">
+          <div class="strength-bar"><div id="strength-fill" class="strength-fill"></div></div>
+          <span id="strength-label" class="strength-label"></span>
+        </div>
+
+        <details class="generator">
+          <summary>Password generator</summary>
+          <div class="gen-body">
+            <label for="gen-length">Length: <output id="gen-length-value">16</output></label>
+            <input type="range" id="gen-length" min="8" max="64" value="16">
+            <label class="inline-check"><input type="checkbox" id="gen-lower" checked> Lowercase letters (a-z)</label>
+            <label class="inline-check"><input type="checkbox" id="gen-upper" checked> Uppercase letters (A-Z)</label>
+            <label class="inline-check"><input type="checkbox" id="gen-numbers" checked> Numbers (0-9)</label>
+            <label class="inline-check"><input type="checkbox" id="gen-symbols" checked> Symbols (!@#$...)</label>
+            <p class="error" id="gen-error" role="alert"></p>
+            <button type="button" id="gen-btn">Generate password</button>
+          </div>
+        </details>
 
         <label for="entry-url">Website</label>
         <input id="entry-url" type="text" placeholder="https://example.com">

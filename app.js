@@ -1,10 +1,17 @@
 // ---------- Settings ----------
-const STORAGE_KEY = "vaultly_meta";
+const STORAGE_KEY = "vaultly_meta";         // salt + encrypted test string
+const DATA_KEY = "vaultly_data";            // encrypted entries
+const SETTINGS_KEY = "vaultly_settings";    // auto-lock time (not secret)
 const PBKDF2_ITERATIONS = 600000;
 const VERIFIER_TEXT = "vault-ok";
+const CLIPBOARD_CLEAR_MS = 20000;           // clear copied password after 20 seconds
+const AUTOLOCK_OPTIONS = [1, 2, 5, 10, 15, 30];
+const DEFAULT_AUTOLOCK_MINUTES = 5;
 
-// The encryption key lives only in memory while the vault is unlocked.
+// These live only in memory while the vault is unlocked.
 let sessionKey = null;
+let entries = [];
+const revealed = new Set(); // ids of entries whose password is visible
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -19,7 +26,6 @@ function fromBase64(text) {
 }
 
 // ---------- Crypto ----------
-// Turn the master password + salt into an AES-256 key.
 async function deriveKey(password, salt, iterations) {
   const baseKey = await crypto.subtle.importKey(
     "raw",
@@ -37,7 +43,6 @@ async function deriveKey(password, salt, iterations) {
   );
 }
 
-// Encrypt text with a fresh random IV every time.
 async function encryptText(key, text) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const cipher = await crypto.subtle.encrypt(
@@ -48,7 +53,6 @@ async function encryptText(key, text) {
   return { iv: toBase64(iv), data: toBase64(cipher) };
 }
 
-// Throws an error if the key is wrong or the data was changed.
 async function decryptText(key, payload) {
   const plain = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: fromBase64(payload.iv) },
@@ -68,7 +72,44 @@ function saveMeta(meta) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(meta));
 }
 
+// Encrypt all entries and save them as one blob.
+async function saveEntries() {
+  const payload = await encryptText(sessionKey, JSON.stringify(entries));
+  localStorage.setItem(DATA_KEY, JSON.stringify(payload));
+}
+
+// Read and decrypt the saved entries (empty list if nothing is saved yet).
+async function loadEntries() {
+  const raw = localStorage.getItem(DATA_KEY);
+  if (!raw) {
+    entries = [];
+    return;
+  }
+  const json = await decryptText(sessionKey, JSON.parse(raw));
+  entries = JSON.parse(json);
+}
+
+// ---------- Settings storage ----------
+function loadAutoLockMinutes() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    if (AUTOLOCK_OPTIONS.includes(saved.autoLockMinutes)) return saved.autoLockMinutes;
+  } catch (err) {
+    // Ignore a broken settings value and use the default.
+  }
+  return DEFAULT_AUTOLOCK_MINUTES;
+}
+
+function saveAutoLockMinutes(minutes) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ autoLockMinutes: minutes }));
+}
+
+let autoLockMinutes = loadAutoLockMinutes();
+
 // ---------- Screens ----------
+const card = document.getElementById("card");
+const lockNotice = document.getElementById("lock-notice");
+const autoLockSelect = document.getElementById("autolock-select");
 const screens = {
   setup: document.getElementById("setup-screen"),
   unlock: document.getElementById("unlock-screen"),
@@ -79,13 +120,99 @@ function showScreen(name) {
   Object.entries(screens).forEach(([key, el]) => {
     el.hidden = key !== name;
   });
+  card.classList.toggle("wide", name === "vault");
   const firstInput = screens[name].querySelector("input");
-  if (firstInput) firstInput.focus();
+  if (firstInput && name !== "vault") firstInput.focus();
+}
+
+async function enterVault() {
+  await loadEntries();
+  searchInput.value = "";
+  closeForm();
+  renderEntries();
+  autoLockSelect.value = String(autoLockMinutes);
+  lockNotice.hidden = true;
+  showScreen("vault");
+  startAutoLockTimer();
+}
+
+// Lock the vault. "message" is an optional note shown on the unlock screen.
+function leaveVault(message) {
+  stopAutoLockTimer();
+  if (clipboardTimer) clearClipboard();
+  sessionKey = null;
+  entries = [];
+  revealed.clear();
+  entryList.replaceChildren();
+  closeForm();
+  lockNotice.textContent = message || "";
+  lockNotice.hidden = !message;
+  showScreen("unlock");
+}
+
+// ---------- Auto-lock ----------
+let lastActivity = Date.now();
+let autoLockTimer = null;
+
+function startAutoLockTimer() {
+  stopAutoLockTimer();
+  lastActivity = Date.now();
+  autoLockTimer = setInterval(checkInactivity, 1000);
+}
+
+function stopAutoLockTimer() {
+  clearInterval(autoLockTimer);
+  autoLockTimer = null;
+}
+
+function checkInactivity() {
+  const idleMs = Date.now() - lastActivity;
+  if (idleMs >= autoLockMinutes * 60 * 1000) {
+    const unit = autoLockMinutes === 1 ? "minute" : "minutes";
+    leaveVault("Your vault was locked after " + autoLockMinutes + " " + unit + " of inactivity.");
+  }
+}
+
+// Any of these counts as "the person is still here".
+["mousemove", "keydown", "click", "scroll", "touchstart"].forEach((name) => {
+  window.addEventListener(
+    name,
+    () => {
+      lastActivity = Date.now();
+    },
+    { passive: true }
+  );
+});
+
+autoLockSelect.addEventListener("change", () => {
+  autoLockMinutes = Number(autoLockSelect.value);
+  saveAutoLockMinutes(autoLockMinutes);
+  lastActivity = Date.now();
+});
+
+// ---------- Clipboard ----------
+let clipboardTimer = null;
+
+async function copyToClipboard(text) {
+  await navigator.clipboard.writeText(text);
+  clearTimeout(clipboardTimer);
+  clipboardTimer = setTimeout(clearClipboard, CLIPBOARD_CLEAR_MS);
+}
+
+async function clearClipboard() {
+  clearTimeout(clipboardTimer);
+  clipboardTimer = null;
+  try {
+    await navigator.clipboard.writeText("");
+  } catch (err) {
+    // The browser only allows this while the page is focused. Nothing more to do.
+  }
 }
 
 // ---------- Create vault ----------
 document.getElementById("setup-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const form = event.target;
   const password = document.getElementById("setup-password").value;
   const confirm = document.getElementById("setup-confirm").value;
   const errorEl = document.getElementById("setup-error");
@@ -104,20 +231,17 @@ document.getElementById("setup-form").addEventListener("submit", async (event) =
   const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
   const verifier = await encryptText(key, VERIFIER_TEXT);
 
-  saveMeta({
-    salt: toBase64(salt),
-    iterations: PBKDF2_ITERATIONS,
-    verifier,
-  });
+  saveMeta({ salt: toBase64(salt), iterations: PBKDF2_ITERATIONS, verifier });
 
   sessionKey = key;
-  event.target.reset();
-  showScreen("vault");
+  form.reset();
+  await enterVault();
 });
 
 // ---------- Unlock vault ----------
 document.getElementById("unlock-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const form = event.target;
   const password = document.getElementById("unlock-password").value;
   const errorEl = document.getElementById("unlock-error");
   errorEl.textContent = "";
@@ -134,23 +258,349 @@ document.getElementById("unlock-form").addEventListener("submit", async (event) 
   }
 
   sessionKey = key;
-  event.target.reset();
-  showScreen("vault");
+  form.reset();
+  await enterVault();
 });
 
-// ---------- Lock vault ----------
-document.getElementById("lock-btn").addEventListener("click", () => {
-  sessionKey = null;
-  showScreen("unlock");
-});
+// ---------- Lock and erase ----------
+document.getElementById("lock-btn").addEventListener("click", () => leaveVault());
 
-// ---------- Erase vault (useful while testing) ----------
 document.getElementById("erase-btn").addEventListener("click", () => {
-  const sure = confirm("This permanently deletes your vault. Continue?");
+  const sure = confirm("This permanently deletes your vault and all entries. Continue?");
   if (!sure) return;
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(DATA_KEY);
   sessionKey = null;
+  entries = [];
+  lockNotice.hidden = true;
   showScreen("setup");
+});
+
+// ---------- Entry form (add and edit) ----------
+const entryForm = document.getElementById("entry-form");
+const addBtn = document.getElementById("add-btn");
+const cancelBtn = document.getElementById("cancel-btn");
+const searchInput = document.getElementById("search");
+const entryList = document.getElementById("entry-list");
+const emptyMsg = document.getElementById("empty-msg");
+
+const fields = {
+  id: document.getElementById("entry-id"),
+  title: document.getElementById("entry-title"),
+  username: document.getElementById("entry-username"),
+  password: document.getElementById("entry-password"),
+  url: document.getElementById("entry-url"),
+  category: document.getElementById("entry-category"),
+  notes: document.getElementById("entry-notes"),
+};
+
+function openForm(entry) {
+  entryForm.reset();
+  fields.password.type = "password";
+  fields.id.value = entry ? entry.id : "";
+  if (entry) {
+    fields.title.value = entry.title;
+    fields.username.value = entry.username;
+    fields.password.value = entry.password;
+    fields.url.value = entry.url;
+    fields.category.value = entry.category;
+    fields.notes.value = entry.notes;
+  }
+  syncLengthLabel();
+  updateStrength();
+  entryForm.hidden = false;
+  fields.title.focus();
+}
+
+function closeForm() {
+  entryForm.reset();
+  syncLengthLabel();
+  updateStrength();
+  entryForm.hidden = true;
+}
+
+addBtn.addEventListener("click", () => openForm(null));
+cancelBtn.addEventListener("click", closeForm);
+
+document.getElementById("entry-show").addEventListener("change", (event) => {
+  fields.password.type = event.target.checked ? "text" : "password";
+});
+
+entryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const data = {
+    title: fields.title.value.trim(),
+    username: fields.username.value.trim(),
+    password: fields.password.value,
+    url: fields.url.value.trim(),
+    category: fields.category.value,
+    notes: fields.notes.value.trim(),
+  };
+
+  const id = fields.id.value;
+  if (id) {
+    const index = entries.findIndex((e) => e.id === id);
+    entries[index] = { ...entries[index], ...data, updatedAt: Date.now() };
+  } else {
+    entries.push({ id: crypto.randomUUID(), ...data, createdAt: Date.now(), updatedAt: Date.now() });
+  }
+
+  await saveEntries();
+  closeForm();
+  renderEntries();
+});
+
+// ---------- Show the list ----------
+searchInput.addEventListener("input", renderEntries);
+
+function matchesSearch(entry, query) {
+  if (!query) return true;
+  const text = [entry.title, entry.username, entry.url, entry.category].join(" ").toLowerCase();
+  return text.includes(query);
+}
+
+function makeLine(className, text) {
+  const p = document.createElement("p");
+  p.className = className;
+  p.textContent = text;
+  return p;
+}
+
+function makeButton(label, onClick, extraClass) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary " + (extraClass || "");
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function renderEntries() {
+  const query = searchInput.value.trim().toLowerCase();
+  const visible = entries
+    .filter((entry) => matchesSearch(entry, query))
+    .sort((a, b) => a.title.localeCompare(b.title));
+
+  entryList.replaceChildren();
+
+  if (entries.length === 0) {
+    emptyMsg.textContent = "Your vault is empty. Choose Add entry to save your first login.";
+    emptyMsg.hidden = false;
+    return;
+  }
+  if (visible.length === 0) {
+    emptyMsg.textContent = "No entries match your search.";
+    emptyMsg.hidden = false;
+    return;
+  }
+  emptyMsg.hidden = true;
+
+  visible.forEach((entry) => entryList.appendChild(buildEntryItem(entry)));
+}
+
+function buildEntryItem(entry) {
+  const li = document.createElement("li");
+  li.className = "entry";
+
+  const top = document.createElement("div");
+  top.className = "entry-top";
+  const title = document.createElement("span");
+  title.className = "entry-title";
+  title.textContent = entry.title;
+  const tag = document.createElement("span");
+  tag.className = "tag";
+  tag.textContent = entry.category;
+  top.append(title, tag);
+  li.appendChild(top);
+
+  if (entry.username) li.appendChild(makeLine("entry-line", entry.username));
+
+  if (entry.url) {
+    const p = document.createElement("p");
+    p.className = "entry-line";
+    if (/^https?:\/\//i.test(entry.url)) {
+      const link = document.createElement("a");
+      link.href = entry.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = entry.url;
+      p.appendChild(link);
+    } else {
+      p.textContent = entry.url;
+    }
+    li.appendChild(p);
+  }
+
+  const isShown = revealed.has(entry.id);
+  li.appendChild(
+    makeLine("entry-line entry-password", isShown ? entry.password : "\u2022".repeat(10))
+  );
+
+  if (entry.notes) li.appendChild(makeLine("entry-line", entry.notes));
+
+  const actions = document.createElement("div");
+  actions.className = "entry-actions";
+
+  actions.appendChild(
+    makeButton(isShown ? "Hide" : "Show", () => {
+      if (revealed.has(entry.id)) revealed.delete(entry.id);
+      else revealed.add(entry.id);
+      renderEntries();
+    })
+  );
+
+  const copyButton = makeButton("Copy password", async () => {
+    try {
+      await copyToClipboard(entry.password);
+      copyButton.textContent = "Copied. Clears in " + CLIPBOARD_CLEAR_MS / 1000 + "s";
+    } catch (err) {
+      copyButton.textContent = "Copy failed";
+    }
+    setTimeout(() => {
+      copyButton.textContent = "Copy password";
+    }, 2500);
+  });
+  actions.appendChild(copyButton);
+
+  actions.appendChild(makeButton("Edit", () => openForm(entry)));
+
+  actions.appendChild(
+    makeButton(
+      "Delete",
+      async () => {
+        if (!confirm('Delete "' + entry.title + '"? This cannot be undone.')) return;
+        entries = entries.filter((e) => e.id !== entry.id);
+        revealed.delete(entry.id);
+        await saveEntries();
+        renderEntries();
+      },
+      "danger"
+    )
+  );
+
+  li.appendChild(actions);
+  return li;
+}
+
+// ---------- Strength meter ----------
+const strengthFill = document.getElementById("strength-fill");
+const strengthLabel = document.getElementById("strength-label");
+
+const COMMON_WORDS = [
+  "password", "passw0rd", "123456", "qwerty", "letmein", "admin",
+  "welcome", "iloveyou", "abc123", "monkey", "dragon", "login",
+];
+
+const STRENGTH_LABELS = ["Very weak", "Weak", "Fair", "Strong", "Very strong"];
+
+// A rough estimate of how hard the password is to guess, in "bits".
+function estimateStrength(password) {
+  if (!password) return -1;
+
+  let pool = 0;
+  if (/[a-z]/.test(password)) pool += 26;
+  if (/[A-Z]/.test(password)) pool += 26;
+  if (/[0-9]/.test(password)) pool += 10;
+  if (/[^A-Za-z0-9]/.test(password)) pool += 32;
+
+  let bits = password.length * Math.log2(pool);
+
+  // Lots of repeated characters make a password easier to guess.
+  const uniqueRatio = new Set(password).size / password.length;
+  bits *= 0.4 + 0.6 * uniqueRatio;
+
+  if (/(.)\1{2,}/.test(password)) bits -= 10; // aaa, 111
+  if (/(0123|1234|2345|3456|4567|5678|6789|abcd|bcde|cdef|qwer|wert|erty|asdf|zxcv)/i.test(password)) {
+    bits -= 15; // keyboard and number runs
+  }
+  const lower = password.toLowerCase();
+  if (COMMON_WORDS.some((word) => lower.includes(word))) bits -= 20;
+
+  if (bits < 28) return 0;
+  if (bits < 40) return 1;
+  if (bits < 60) return 2;
+  if (bits < 80) return 3;
+  return 4;
+}
+
+function updateStrength() {
+  const level = estimateStrength(fields.password.value);
+  if (level < 0) {
+    strengthFill.style.width = "0";
+    strengthFill.className = "strength-fill";
+    strengthLabel.textContent = "";
+    return;
+  }
+  strengthFill.style.width = (level + 1) * 20 + "%";
+  strengthFill.className = "strength-fill level-" + level;
+  strengthLabel.textContent = STRENGTH_LABELS[level];
+}
+
+fields.password.addEventListener("input", updateStrength);
+
+// ---------- Password generator ----------
+const genLength = document.getElementById("gen-length");
+const genLengthValue = document.getElementById("gen-length-value");
+const genError = document.getElementById("gen-error");
+
+const CHARSETS = {
+  lower: "abcdefghijklmnopqrstuvwxyz",
+  upper: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  numbers: "0123456789",
+  symbols: "!@#$%^&*()-_=+[]{};:,.?",
+};
+
+function syncLengthLabel() {
+  genLengthValue.textContent = genLength.value;
+}
+
+genLength.addEventListener("input", syncLengthLabel);
+
+// A secure random whole number from 0 to max - 1, with no bias.
+function randomInt(max) {
+  const limit = Math.floor(0x100000000 / max) * max;
+  const buffer = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(buffer);
+  } while (buffer[0] >= limit);
+  return buffer[0] % max;
+}
+
+function generatePassword(length, sets) {
+  const allChars = sets.join("");
+
+  // Take one character from each chosen set, then fill the rest.
+  const chars = sets.map((set) => set[randomInt(set.length)]);
+  while (chars.length < length) {
+    chars.push(allChars[randomInt(allChars.length)]);
+  }
+
+  // Shuffle so the guaranteed characters are not always first.
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+document.getElementById("gen-btn").addEventListener("click", () => {
+  const sets = [];
+  if (document.getElementById("gen-lower").checked) sets.push(CHARSETS.lower);
+  if (document.getElementById("gen-upper").checked) sets.push(CHARSETS.upper);
+  if (document.getElementById("gen-numbers").checked) sets.push(CHARSETS.numbers);
+  if (document.getElementById("gen-symbols").checked) sets.push(CHARSETS.symbols);
+
+  if (sets.length === 0) {
+    genError.textContent = "Choose at least one type of character.";
+    return;
+  }
+  genError.textContent = "";
+
+  fields.password.value = generatePassword(Number(genLength.value), sets);
+  fields.password.type = "text";
+  document.getElementById("entry-show").checked = true;
+  updateStrength();
 });
 
 // ---------- Start ----------
