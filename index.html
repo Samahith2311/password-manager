@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main class="card">
+  <main class="card" id="card">
     <h1>Vaultly</h1>
 
     <!-- Screen 1: first-time setup -->
@@ -35,11 +35,58 @@
       <button type="button" id="erase-btn" class="link-btn">Erase vault and start over</button>
     </section>
 
-    <!-- Screen 3: vault (placeholder for the next steps) -->
+    <!-- Screen 3: vault -->
     <section id="vault-screen" hidden>
-      <p class="success">Vault unlocked.</p>
-      <p class="hint">Your entries will appear here in the next step.</p>
-      <button type="button" id="lock-btn">Lock vault</button>
+      <div class="vault-header">
+        <h2>Your vault</h2>
+        <button type="button" id="lock-btn" class="secondary">Lock vault</button>
+      </div>
+
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search title, username, website or category" aria-label="Search entries">
+        <button type="button" id="add-btn">Add entry</button>
+      </div>
+
+      <form id="entry-form" hidden>
+        <input type="hidden" id="entry-id">
+
+        <label for="entry-title">Title</label>
+        <input id="entry-title" type="text" placeholder="For example: Gmail" required>
+
+        <label for="entry-username">Username or email</label>
+        <input id="entry-username" type="text" autocomplete="off">
+
+        <label for="entry-password">Password</label>
+        <input id="entry-password" type="password" autocomplete="new-password" required>
+        <label class="inline-check">
+          <input type="checkbox" id="entry-show"> Show password
+        </label>
+
+        <label for="entry-url">Website</label>
+        <input id="entry-url" type="text" placeholder="https://example.com">
+
+        <label for="entry-category">Category</label>
+        <select id="entry-category">
+          <option>Email</option>
+          <option>Social</option>
+          <option>Banking</option>
+          <option>Shopping</option>
+          <option>Work</option>
+          <option>Apps</option>
+          <option>Other</option>
+        </select>
+
+        <label for="entry-notes">Notes</label>
+        <textarea id="entry-notes" rows="3"></textarea>
+
+        <div class="form-actions">
+          <button type="submit">Save entry</button>
+          <button type="button" id="cancel-btn" class="secondary">Cancel</button>
+        </div>
+      </form>
+
+      <p id="empty-msg" class="hint" hidden></p>
+      <ul id="entry-list" class="entry-list"></ul>
     </section>
   </main>
 
