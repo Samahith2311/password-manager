@@ -56,8 +56,11 @@
 
       <div class="toolbar">
         <input id="search" type="search" placeholder="Search title, username, website or category" aria-label="Search entries">
+        <button type="button" id="check-all-btn" class="secondary">Check for breaches</button>
         <button type="button" id="add-btn">Add entry</button>
       </div>
+
+      <p class="status" id="breach-summary" role="status"></p>
 
       <details class="backup" id="backup-panel">
         <summary>Backup and import</summary>
@@ -103,6 +106,11 @@
           <span id="strength-label" class="strength-label"></span>
         </div>
 
+        <div class="breach-row">
+          <button type="button" id="breach-btn" class="secondary">Check if breached</button>
+          <span id="breach-result" class="breach-result" role="status"></span>
+        </div>
+
         <details class="generator">
           <summary>Password generator</summary>
           <div class="gen-body">
@@ -111,40 +119,4 @@
             <label class="inline-check"><input type="checkbox" id="gen-lower" checked> Lowercase letters (a-z)</label>
             <label class="inline-check"><input type="checkbox" id="gen-upper" checked> Uppercase letters (A-Z)</label>
             <label class="inline-check"><input type="checkbox" id="gen-numbers" checked> Numbers (0-9)</label>
-            <label class="inline-check"><input type="checkbox" id="gen-symbols" checked> Symbols (!@#$...)</label>
-            <p class="error" id="gen-error" role="alert"></p>
-            <button type="button" id="gen-btn">Generate password</button>
-          </div>
-        </details>
-
-        <label for="entry-url">Website</label>
-        <input id="entry-url" type="text" placeholder="https://example.com">
-
-        <label for="entry-category">Category</label>
-        <select id="entry-category">
-          <option>Email</option>
-          <option>Social</option>
-          <option>Banking</option>
-          <option>Shopping</option>
-          <option>Work</option>
-          <option>Apps</option>
-          <option>Other</option>
-        </select>
-
-        <label for="entry-notes">Notes</label>
-        <textarea id="entry-notes" rows="3"></textarea>
-
-        <div class="form-actions">
-          <button type="submit">Save entry</button>
-          <button type="button" id="cancel-btn" class="secondary">Cancel</button>
-        </div>
-      </form>
-
-      <p id="empty-msg" class="hint" hidden></p>
-      <ul id="entry-list" class="entry-list"></ul>
-    </section>
-  </main>
-
-  <script src="app.js"></script>
-</body>
-</html>
+            <label

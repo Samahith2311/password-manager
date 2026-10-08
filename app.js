@@ -9,11 +9,13 @@ const AUTOLOCK_OPTIONS = [1, 2, 5, 10, 15, 30];
 const DEFAULT_AUTOLOCK_MINUTES = 5;
 const BACKUP_APP_NAME = "vaultly-backup";
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;  // refuse files bigger than 10 MB
+const PWNED_RANGE_URL = "https://api.pwnedpasswords.com/range/";
 
 // These live only in memory while the vault is unlocked.
 let sessionKey = null;
 let entries = [];
-const revealed = new Set(); // ids of entries whose password is visible
+const revealed = new Set();       // ids of entries whose password is visible
+const breachResults = new Map();  // entry id -> number of times seen in breaches
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -148,6 +150,7 @@ function leaveVault(message) {
   entryList.replaceChildren();
   closeForm();
   resetBackupUi();
+  resetBreachUi();
   lockNotice.textContent = message || "";
   lockNotice.hidden = !message;
   showScreen("unlock");
@@ -311,6 +314,7 @@ function openForm(entry) {
   }
   syncLengthLabel();
   updateStrength();
+  clearBreachResult();
   entryForm.hidden = false;
   fields.title.focus();
 }
@@ -319,6 +323,7 @@ function closeForm() {
   entryForm.reset();
   syncLengthLabel();
   updateStrength();
+  clearBreachResult();
   entryForm.hidden = true;
 }
 
@@ -345,6 +350,7 @@ entryForm.addEventListener("submit", async (event) => {
   if (id) {
     const index = entries.findIndex((e) => e.id === id);
     entries[index] = { ...entries[index], ...data, updatedAt: Date.now() };
+    breachResults.delete(id); // the password may have changed, so the old result is stale
   } else {
     entries.push({ id: crypto.randomUUID(), ...data, createdAt: Date.now(), updatedAt: Date.now() });
   }
@@ -379,6 +385,13 @@ function makeButton(label, onClick, extraClass) {
   return button;
 }
 
+function makeTag(text, extraClass) {
+  const tag = document.createElement("span");
+  tag.className = "tag " + (extraClass || "");
+  tag.textContent = text;
+  return tag;
+}
+
 function renderEntries() {
   const query = searchInput.value.trim().toLowerCase();
   const visible = entries
@@ -411,10 +424,20 @@ function buildEntryItem(entry) {
   const title = document.createElement("span");
   title.className = "entry-title";
   title.textContent = entry.title;
-  const tag = document.createElement("span");
-  tag.className = "tag";
-  tag.textContent = entry.category;
-  top.append(title, tag);
+
+  const tags = document.createElement("span");
+  tags.className = "tags";
+  if (breachResults.has(entry.id)) {
+    const count = breachResults.get(entry.id);
+    if (count > 0) {
+      tags.appendChild(makeTag("Seen " + count.toLocaleString() + " times in breaches", "tag-danger"));
+    } else {
+      tags.appendChild(makeTag("No breach found", "tag-ok"));
+    }
+  }
+  tags.appendChild(makeTag(entry.category));
+
+  top.append(title, tags);
   li.appendChild(top);
 
   if (entry.username) li.appendChild(makeLine("entry-line", entry.username));
@@ -475,6 +498,7 @@ function buildEntryItem(entry) {
         if (!confirm('Delete "' + entry.title + '"? This cannot be undone.')) return;
         entries = entries.filter((e) => e.id !== entry.id);
         revealed.delete(entry.id);
+        breachResults.delete(entry.id);
         await saveEntries();
         renderEntries();
       },
@@ -604,6 +628,149 @@ document.getElementById("gen-btn").addEventListener("click", () => {
   fields.password.type = "text";
   document.getElementById("entry-show").checked = true;
   updateStrength();
+  clearBreachResult();
+});
+
+// ---------- Breach check (Have I Been Pwned, k-anonymity) ----------
+const breachBtn = document.getElementById("breach-btn");
+const breachResult = document.getElementById("breach-result");
+const checkAllBtn = document.getElementById("check-all-btn");
+const breachSummary = document.getElementById("breach-summary");
+
+const rangeCache = new Map(); // first 5 hash characters -> Map(rest of hash -> count)
+
+// The SHA-1 hash of the password, as uppercase hex text.
+async function sha1Hex(text) {
+  const buffer = await crypto.subtle.digest("SHA-1", encoder.encode(text));
+  return Array.from(new Uint8Array(buffer))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+}
+
+// Ask the service for every hash that starts with these 5 characters.
+async function fetchRange(prefix) {
+  if (rangeCache.has(prefix)) return rangeCache.get(prefix);
+
+  const response = await fetch(PWNED_RANGE_URL + prefix);
+  if (!response.ok) throw new Error("Breach service error " + response.status);
+
+  const text = await response.text();
+  const hashes = new Map();
+  text.split("\n").forEach((line) => {
+    const [suffix, count] = line.trim().split(":");
+    if (suffix && count) hashes.set(suffix, Number(count));
+  });
+
+  rangeCache.set(prefix, hashes);
+  return hashes;
+}
+
+// How many times this password appears in known breaches (0 means not found).
+// Only the first 5 characters of the hash are ever sent over the network.
+async function pwnedCount(password) {
+  const hash = await sha1Hex(password);
+  const hashes = await fetchRange(hash.slice(0, 5));
+  return hashes.get(hash.slice(5)) || 0;
+}
+
+function setBreachResult(message, isError) {
+  breachResult.textContent = message || "";
+  breachResult.classList.toggle("is-error", Boolean(isError));
+}
+
+function clearBreachResult() {
+  setBreachResult("");
+}
+
+// A changed password makes any earlier result out of date.
+fields.password.addEventListener("input", clearBreachResult);
+
+function resetBreachUi() {
+  breachResults.clear();
+  rangeCache.clear();
+  breachSummary.textContent = "";
+  breachSummary.classList.remove("is-error");
+  checkAllBtn.disabled = false;
+}
+
+// --- Check the password typed in the form ---
+breachBtn.addEventListener("click", async () => {
+  const password = fields.password.value;
+  if (!password) {
+    setBreachResult("Enter a password first.", true);
+    return;
+  }
+
+  breachBtn.disabled = true;
+  setBreachResult("Checking...");
+
+  try {
+    const count = await pwnedCount(password);
+    if (count > 0) {
+      setBreachResult(
+        "Seen " + count.toLocaleString() + " times in known data breaches. Choose a different password.",
+        true
+      );
+    } else {
+      setBreachResult("Not found in known breaches. That is good, but it does not guarantee it is safe.");
+    }
+  } catch (err) {
+    setBreachResult("Could not check right now. Are you online?", true);
+  }
+
+  breachBtn.disabled = false;
+});
+
+// --- Check every entry in the vault ---
+checkAllBtn.addEventListener("click", async () => {
+  if (entries.length === 0) {
+    breachSummary.textContent = "Your vault has no entries to check.";
+    breachSummary.classList.add("is-error");
+    return;
+  }
+
+  const snapshot = entries.slice();
+  checkAllBtn.disabled = true;
+  breachSummary.classList.remove("is-error");
+  breachSummary.textContent = "Checking " + snapshot.length + " passwords...";
+
+  let breached = 0;
+  let failed = 0;
+
+  for (const entry of snapshot) {
+    try {
+      const count = await pwnedCount(entry.password);
+      breachResults.set(entry.id, count);
+      if (count > 0) breached++;
+    } catch (err) {
+      failed++;
+    }
+  }
+
+  // The vault may have been locked while we were checking.
+  if (sessionKey === null) return;
+
+  renderEntries();
+  checkAllBtn.disabled = false;
+
+  if (failed === snapshot.length) {
+    breachSummary.textContent = "Could not reach the breach service. Check your internet connection.";
+    breachSummary.classList.add("is-error");
+    return;
+  }
+
+  let message;
+  if (breached > 0) {
+    message =
+      breached + " of " + snapshot.length +
+      " passwords appeared in known data breaches. Change those passwords as soon as you can.";
+    breachSummary.classList.add("is-error");
+  } else {
+    message = "None of the checked passwords were found in known breaches.";
+  }
+  if (failed > 0) message += " " + failed + " could not be checked.";
+  breachSummary.textContent = message;
 });
 
 // ---------- Backup and import ----------

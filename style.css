@@ -76,6 +76,8 @@ button {
 
 button:hover { background: var(--accent-dark); }
 
+button:disabled { opacity: 0.6; cursor: wait; }
+
 button.secondary {
   color: var(--text);
   background: var(--soft);
@@ -144,7 +146,10 @@ button.secondary:hover { background: #e3e9ed; }
   display: flex;
   gap: 10px;
   margin-top: 18px;
+  flex-wrap: wrap;
 }
+
+.toolbar input[type="search"] { flex: 1; width: auto; min-width: 180px; }
 
 .toolbar button { width: auto; margin: 0; padding: 10px 18px; white-space: nowrap; }
 
@@ -296,3 +301,38 @@ button.secondary:hover { background: #e3e9ed; }
 }
 
 .status.is-error { color: var(--danger); }
+
+/* ---------- Breach check ---------- */
+.breach-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.breach-row button {
+  width: auto;
+  margin: 0;
+  padding: 7px 14px;
+  font-size: 0.9rem;
+}
+
+.breach-result {
+  flex: 1;
+  min-width: 12em;
+  font-size: 0.9rem;
+  color: var(--accent-dark);
+}
+
+.breach-result.is-error { color: var(--danger); }
+
+.tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.tag-danger { color: #7a1710; background: #fbe0dd; }
+.tag-ok { color: #33566b; background: #e3edf2; }
