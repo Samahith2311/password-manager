@@ -7,6 +7,8 @@ const VERIFIER_TEXT = "vault-ok";
 const CLIPBOARD_CLEAR_MS = 20000;           // clear copied password after 20 seconds
 const AUTOLOCK_OPTIONS = [1, 2, 5, 10, 15, 30];
 const DEFAULT_AUTOLOCK_MINUTES = 5;
+const BACKUP_APP_NAME = "vaultly-backup";
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;  // refuse files bigger than 10 MB
 
 // These live only in memory while the vault is unlocked.
 let sessionKey = null;
@@ -145,6 +147,7 @@ function leaveVault(message) {
   revealed.clear();
   entryList.replaceChildren();
   closeForm();
+  resetBackupUi();
   lockNotice.textContent = message || "";
   lockNotice.hidden = !message;
   showScreen("unlock");
@@ -602,6 +605,341 @@ document.getElementById("gen-btn").addEventListener("click", () => {
   document.getElementById("entry-show").checked = true;
   updateStrength();
 });
+
+// ---------- Backup and import ----------
+const backupPanel = document.getElementById("backup-panel");
+const exportBtn = document.getElementById("export-btn");
+const importBtn = document.getElementById("import-btn");
+const importFile = document.getElementById("import-file");
+const restoreForm = document.getElementById("restore-form");
+const restoreFileName = document.getElementById("restore-file-name");
+const restorePassword = document.getElementById("restore-password");
+const backupStatus = document.getElementById("backup-status");
+
+let pendingBackup = null; // a backup file waiting for its password
+
+function setBackupStatus(message, isError) {
+  backupStatus.textContent = message || "";
+  backupStatus.classList.toggle("is-error", Boolean(isError));
+}
+
+function hideRestoreForm() {
+  pendingBackup = null;
+  restoreForm.reset();
+  restoreForm.hidden = true;
+}
+
+function resetBackupUi() {
+  hideRestoreForm();
+  setBackupStatus("");
+  backupPanel.open = false;
+}
+
+// --- Cleaning up imported entries ---
+function str(value) {
+  return typeof value === "string" ? value : "";
+}
+
+function categoryNames() {
+  return Array.from(fields.category.options).map((option) => option.value);
+}
+
+function normalizeEntry(raw) {
+  const category = categoryNames().includes(raw.category) ? raw.category : "Other";
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    title: str(raw.title).trim() || "Untitled",
+    username: str(raw.username).trim(),
+    password: str(raw.password),
+    url: str(raw.url).trim(),
+    category,
+    notes: str(raw.notes).trim(),
+    createdAt: Number(raw.createdAt) || Date.now(),
+    updatedAt: Number(raw.updatedAt) || Date.now(),
+  };
+}
+
+function entryKey(entry) {
+  return [entry.title, entry.username, entry.url].map((s) => s.toLowerCase()).join("|");
+}
+
+// Add new entries and skip any that already exist (same title, username and website).
+function mergeEntries(incoming) {
+  const keys = new Set(entries.map(entryKey));
+  const ids = new Set(entries.map((e) => e.id));
+  let added = 0;
+  let skipped = 0;
+
+  incoming.forEach((raw) => {
+    if (!raw || typeof raw !== "object") {
+      skipped++;
+      return;
+    }
+    const entry = normalizeEntry(raw);
+    const key = entryKey(entry);
+    if (keys.has(key)) {
+      skipped++;
+      return;
+    }
+    if (ids.has(entry.id)) entry.id = crypto.randomUUID();
+    keys.add(key);
+    ids.add(entry.id);
+    entries.push(entry);
+    added++;
+  });
+
+  return { added, skipped };
+}
+
+function plural(count, word) {
+  return count + " " + word + (count === 1 ? "" : "s");
+}
+
+// --- Export ---
+exportBtn.addEventListener("click", async () => {
+  if (entries.length === 0) {
+    setBackupStatus("There is nothing to export yet.", true);
+    return;
+  }
+
+  const meta = loadMeta();
+  const data = await encryptText(sessionKey, JSON.stringify(entries));
+  const backup = {
+    app: BACKUP_APP_NAME,
+    version: 1,
+    createdAt: new Date().toISOString(),
+    salt: meta.salt,
+    iterations: meta.iterations,
+    data,
+  };
+
+  const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "vaultly-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  setBackupStatus(
+    "Backup downloaded with " + plural(entries.length, "entry").replace("entrys", "entries") +
+    ". To restore it you will need the master password you are using right now."
+  );
+});
+
+// --- Choosing a file to import ---
+importBtn.addEventListener("click", () => {
+  importFile.value = "";
+  importFile.click();
+});
+
+importFile.addEventListener("change", async () => {
+  const file = importFile.files[0];
+  if (!file) return;
+
+  hideRestoreForm();
+  setBackupStatus("");
+
+  if (file.size > MAX_IMPORT_BYTES) {
+    setBackupStatus("That file is too large to import.", true);
+    return;
+  }
+
+  const text = await file.text();
+
+  if (/\.csv$/i.test(file.name)) {
+    await importCsv(text);
+  } else if (/\.json$/i.test(file.name)) {
+    prepareRestore(file.name, text);
+  } else {
+    setBackupStatus("Choose a .json backup or a .csv passwords file.", true);
+  }
+});
+
+// --- Restore a Vaultly backup ---
+function isValidBackup(backup) {
+  return (
+    backup &&
+    backup.app === BACKUP_APP_NAME &&
+    backup.version === 1 &&
+    typeof backup.salt === "string" &&
+    Number.isInteger(backup.iterations) &&
+    backup.iterations >= 100000 &&
+    backup.iterations <= 5000000 &&
+    backup.data &&
+    typeof backup.data.iv === "string" &&
+    typeof backup.data.data === "string"
+  );
+}
+
+function prepareRestore(fileName, text) {
+  let backup;
+  try {
+    backup = JSON.parse(text);
+  } catch (err) {
+    backup = null;
+  }
+
+  if (!isValidBackup(backup)) {
+    setBackupStatus("This does not look like a Vaultly backup file.", true);
+    return;
+  }
+
+  pendingBackup = backup;
+  restoreFileName.textContent = "Backup file: " + fileName;
+  restoreForm.hidden = false;
+  restorePassword.focus();
+}
+
+restoreForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!pendingBackup) return;
+
+  let incoming;
+  try {
+    const key = await deriveKey(
+      restorePassword.value,
+      fromBase64(pendingBackup.salt),
+      pendingBackup.iterations
+    );
+    const json = await decryptText(key, pendingBackup.data);
+    incoming = JSON.parse(json);
+    if (!Array.isArray(incoming)) throw new Error("Unexpected backup contents");
+  } catch (err) {
+    restorePassword.value = "";
+    setBackupStatus("Could not open this backup. Check the password and the file.", true);
+    return;
+  }
+
+  const result = mergeEntries(incoming);
+  await saveEntries();
+  renderEntries();
+  hideRestoreForm();
+  setBackupStatus(
+    "Restored " + plural(result.added, "entry").replace("entrys", "entries") +
+    ". Skipped " + plural(result.skipped, "duplicate") + "."
+  );
+});
+
+document.getElementById("restore-cancel").addEventListener("click", () => {
+  hideRestoreForm();
+  setBackupStatus("");
+});
+
+// --- Import a passwords CSV (Chrome, Edge and similar) ---
+// Reads CSV text, including quoted fields that contain commas or line breaks.
+function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // remove byte order mark
+
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      row.push(field);
+      field = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      field = "";
+      rows.push(row);
+      row = [];
+    } else {
+      field += ch;
+    }
+  }
+
+  if (field !== "" || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  return rows.filter((r) => r.some((cell) => cell.trim() !== ""));
+}
+
+function websiteName(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (err) {
+    return url;
+  }
+}
+
+async function importCsv(text) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) {
+    setBackupStatus("That CSV file has no entries.", true);
+    return;
+  }
+
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
+  const find = (names) => headers.findIndex((h) => names.includes(h));
+
+  const iTitle = find(["name", "title", "login_name"]);
+  const iUrl = find(["url", "login_uri", "website", "origin"]);
+  const iUser = find(["username", "login_username", "user"]);
+  const iPass = find(["password", "login_password"]);
+  const iNote = find(["note", "notes", "extra"]);
+
+  if (iPass === -1 || (iUrl === -1 && iTitle === -1)) {
+    setBackupStatus(
+      "This CSV is not recognized. It needs columns like name, url, username and password.",
+      true
+    );
+    return;
+  }
+
+  const incoming = [];
+  let noPassword = 0;
+
+  rows.slice(1).forEach((row) => {
+    const get = (index) => (index >= 0 ? (row[index] || "").trim() : "");
+    const password = row[iPass] || "";
+    if (!password) {
+      noPassword++;
+      return;
+    }
+    const url = get(iUrl);
+    incoming.push({
+      title: get(iTitle) || websiteName(url),
+      url,
+      username: get(iUser),
+      password,
+      notes: get(iNote),
+      category: "Other",
+    });
+  });
+
+  const result = mergeEntries(incoming);
+  await saveEntries();
+  renderEntries();
+
+  setBackupStatus(
+    "Imported " + plural(result.added, "entry").replace("entrys", "entries") +
+    ". Skipped " + plural(result.skipped, "duplicate") +
+    " and " + plural(noPassword, "row") + " without a password. " +
+    "Delete the CSV file now, because it holds your passwords as plain text."
+  );
+}
 
 // ---------- Start ----------
 showScreen(loadMeta() ? "unlock" : "setup");

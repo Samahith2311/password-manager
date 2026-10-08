@@ -56,7 +56,7 @@ textarea {
   background: #fff;
 }
 
-input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
@@ -253,3 +253,46 @@ button.secondary:hover { background: #e3e9ed; }
 .gen-body input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .gen-body .error { min-height: 0; }
+
+/* ---------- Backup and import ---------- */
+.backup {
+  margin-top: 14px;
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.backup summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; }
+
+.backup-body { padding: 10px 0 4px; }
+
+.backup-body > .hint { margin-bottom: 12px; font-size: 0.9rem; }
+
+.backup-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.backup-actions button {
+  width: auto;
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 0.92rem;
+}
+
+#restore-form {
+  margin-top: 14px;
+  padding: 6px 16px 18px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+#restore-form .hint { margin: 10px 0 0; font-size: 0.9rem; }
+
+.status {
+  margin: 12px 0 0;
+  min-height: 1.3em;
+  font-size: 0.9rem;
+  color: var(--accent-dark);
+}
+
+.status.is-error { color: var(--danger); }
