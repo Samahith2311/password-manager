@@ -119,4 +119,40 @@
             <label class="inline-check"><input type="checkbox" id="gen-lower" checked> Lowercase letters (a-z)</label>
             <label class="inline-check"><input type="checkbox" id="gen-upper" checked> Uppercase letters (A-Z)</label>
             <label class="inline-check"><input type="checkbox" id="gen-numbers" checked> Numbers (0-9)</label>
-            <label
+            <label class="inline-check"><input type="checkbox" id="gen-symbols" checked> Symbols (!@#$...)</label>
+            <p class="error" id="gen-error" role="alert"></p>
+            <button type="button" id="gen-btn">Generate password</button>
+          </div>
+        </details>
+
+        <label for="entry-url">Website</label>
+        <input id="entry-url" type="text" placeholder="https://example.com">
+
+        <label for="entry-category">Category</label>
+        <select id="entry-category">
+          <option>Email</option>
+          <option>Social</option>
+          <option>Banking</option>
+          <option>Shopping</option>
+          <option>Work</option>
+          <option>Apps</option>
+          <option>Other</option>
+        </select>
+
+        <label for="entry-notes">Notes</label>
+        <textarea id="entry-notes" rows="3"></textarea>
+
+        <div class="form-actions">
+          <button type="submit">Save entry</button>
+          <button type="button" id="cancel-btn" class="secondary">Cancel</button>
+        </div>
+      </form>
+
+      <p id="empty-msg" class="hint" hidden></p>
+      <ul id="entry-list" class="entry-list"></ul>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
