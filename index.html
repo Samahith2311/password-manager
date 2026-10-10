@@ -4,11 +4,29 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Vaultly - Password Manager</title>
+  <script>
+    // Set the theme before the page draws, so there is no flash of the wrong colors.
+    (function () {
+      var theme = "light";
+      try {
+        var saved = JSON.parse(localStorage.getItem("vaultly_settings") || "{}");
+        if (saved.theme === "dark" || saved.theme === "light") {
+          theme = saved.theme;
+        } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+          theme = "dark";
+        }
+      } catch (err) {}
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main class="card" id="card">
-    <h1>Vaultly</h1>
+    <div class="top-row">
+      <h1>Vaultly</h1>
+      <button type="button" id="theme-btn" class="secondary theme-btn">Dark mode</button>
+    </div>
 
     <!-- Screen 1: first-time setup -->
     <section id="setup-screen" hidden>
@@ -61,6 +79,11 @@
       </div>
 
       <p class="status" id="breach-summary" role="status"></p>
+
+      <details class="dashboard" open>
+        <summary>Security overview</summary>
+        <div class="dashboard-body" id="dashboard-body"></div>
+      </details>
 
       <details class="backup" id="backup-panel">
         <summary>Backup and import</summary>

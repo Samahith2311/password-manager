@@ -1,7 +1,7 @@
 // ---------- Settings ----------
 const STORAGE_KEY = "vaultly_meta";         // salt + encrypted test string
 const DATA_KEY = "vaultly_data";            // encrypted entries
-const SETTINGS_KEY = "vaultly_settings";    // auto-lock time (not secret)
+const SETTINGS_KEY = "vaultly_settings";    // auto-lock time and theme (not secret)
 const PBKDF2_ITERATIONS = 600000;
 const VERIFIER_TEXT = "vault-ok";
 const CLIPBOARD_CLEAR_MS = 20000;           // clear copied password after 20 seconds
@@ -10,6 +10,8 @@ const DEFAULT_AUTOLOCK_MINUTES = 5;
 const BACKUP_APP_NAME = "vaultly-backup";
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;  // refuse files bigger than 10 MB
 const PWNED_RANGE_URL = "https://api.pwnedpasswords.com/range/";
+const OLD_PASSWORD_MS = 365 * 24 * 60 * 60 * 1000; // one year
+const MAX_ISSUE_ROWS = 8;
 
 // These live only in memory while the vault is unlocked.
 let sessionKey = null;
@@ -94,21 +96,50 @@ async function loadEntries() {
 }
 
 // ---------- Settings storage ----------
-function loadAutoLockMinutes() {
+function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
-    if (AUTOLOCK_OPTIONS.includes(saved.autoLockMinutes)) return saved.autoLockMinutes;
+    return saved && typeof saved === "object" ? saved : {};
   } catch (err) {
-    // Ignore a broken settings value and use the default.
+    return {};
   }
-  return DEFAULT_AUTOLOCK_MINUTES;
 }
 
-function saveAutoLockMinutes(minutes) {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ autoLockMinutes: minutes }));
+// Save only the settings that changed, keeping the others.
+function saveSettings(changes) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...loadSettings(), ...changes }));
+}
+
+function loadAutoLockMinutes() {
+  const saved = loadSettings().autoLockMinutes;
+  return AUTOLOCK_OPTIONS.includes(saved) ? saved : DEFAULT_AUTOLOCK_MINUTES;
 }
 
 let autoLockMinutes = loadAutoLockMinutes();
+
+// ---------- Theme (light and dark) ----------
+const themeBtn = document.getElementById("theme-btn");
+
+function getTheme() {
+  const saved = loadSettings().theme;
+  if (saved === "dark" || saved === "light") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  themeBtn.textContent = theme === "dark" ? "Light mode" : "Dark mode";
+  themeBtn.setAttribute(
+    "aria-label",
+    theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+  );
+}
+
+themeBtn.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  saveSettings({ theme: next });
+  applyTheme(next);
+});
 
 // ---------- Screens ----------
 const card = document.getElementById("card");
@@ -148,6 +179,7 @@ function leaveVault(message) {
   entries = [];
   revealed.clear();
   entryList.replaceChildren();
+  dashboardBody.replaceChildren();
   closeForm();
   resetBackupUi();
   resetBreachUi();
@@ -192,7 +224,7 @@ function checkInactivity() {
 
 autoLockSelect.addEventListener("change", () => {
   autoLockMinutes = Number(autoLockSelect.value);
-  saveAutoLockMinutes(autoLockMinutes);
+  saveSettings({ autoLockMinutes });
   lastActivity = Date.now();
 });
 
@@ -316,6 +348,7 @@ function openForm(entry) {
   updateStrength();
   clearBreachResult();
   entryForm.hidden = false;
+  entryForm.scrollIntoView({ block: "start" });
   fields.title.focus();
 }
 
@@ -349,7 +382,14 @@ entryForm.addEventListener("submit", async (event) => {
   const id = fields.id.value;
   if (id) {
     const index = entries.findIndex((e) => e.id === id);
-    entries[index] = { ...entries[index], ...data, updatedAt: Date.now() };
+    const old = entries[index];
+    // Only a changed password resets the "last changed" date.
+    const passwordChanged = old.password !== data.password;
+    entries[index] = {
+      ...old,
+      ...data,
+      updatedAt: passwordChanged ? Date.now() : old.updatedAt || old.createdAt || Date.now(),
+    };
     breachResults.delete(id); // the password may have changed, so the old result is stale
   } else {
     entries.push({ id: crypto.randomUUID(), ...data, createdAt: Date.now(), updatedAt: Date.now() });
@@ -393,6 +433,8 @@ function makeTag(text, extraClass) {
 }
 
 function renderEntries() {
+  renderDashboard();
+
   const query = searchInput.value.trim().toLowerCase();
   const visible = entries
     .filter((entry) => matchesSearch(entry, query))
@@ -508,6 +550,179 @@ function buildEntryItem(entry) {
 
   li.appendChild(actions);
   return li;
+}
+
+// ---------- Security overview ----------
+const dashboardBody = document.getElementById("dashboard-body");
+
+// Work out which entries have problems, and an overall score from 0 to 100.
+function analyzeVault() {
+  // Group entries by password to find reuse.
+  const byPassword = new Map();
+  entries.forEach((entry) => {
+    if (!entry.password) return;
+    if (!byPassword.has(entry.password)) byPassword.set(entry.password, []);
+    byPassword.get(entry.password).push(entry);
+  });
+  const reusedIds = new Set();
+  byPassword.forEach((group) => {
+    if (group.length > 1) group.forEach((entry) => reusedIds.add(entry.id));
+  });
+
+  const weak = [];
+  const reused = [];
+  const breached = [];
+  const old = [];
+  let penalty = 0;
+
+  entries.forEach((entry) => {
+    let entryPenalty = 0;
+
+    if (estimateStrength(entry.password) <= 1) {
+      weak.push(entry);
+      entryPenalty += 0.6;
+    }
+    if (reusedIds.has(entry.id)) {
+      reused.push(entry);
+      entryPenalty += 0.6;
+    }
+    if ((breachResults.get(entry.id) || 0) > 0) {
+      breached.push(entry);
+      entryPenalty += 1;
+    }
+    const changedAt = entry.updatedAt || entry.createdAt || Date.now();
+    if (Date.now() - changedAt > OLD_PASSWORD_MS) {
+      old.push(entry);
+      entryPenalty += 0.2;
+    }
+
+    penalty += Math.min(1, entryPenalty);
+  });
+
+  const score = entries.length
+    ? Math.round(100 * (1 - penalty / entries.length))
+    : 100;
+
+  return { weak, reused, breached, old, score };
+}
+
+function scoreInfo(score) {
+  if (score >= 90) return { label: "Excellent", cls: "s4" };
+  if (score >= 75) return { label: "Good", cls: "s3" };
+  if (score >= 50) return { label: "Needs work", cls: "s2" };
+  return { label: "At risk", cls: "s0" };
+}
+
+// One block of the overview: a title, a count, and the entries with that problem.
+function buildIssue(title, description, list, checked) {
+  const section = document.createElement("div");
+  section.className = "issue";
+
+  const head = document.createElement("div");
+  head.className = "issue-head";
+  const name = document.createElement("span");
+  name.textContent = title;
+
+  let countTag;
+  if (!checked) {
+    countTag = makeTag("Not checked yet");
+  } else if (list.length > 0) {
+    countTag = makeTag(String(list.length), "tag-danger");
+  } else {
+    countTag = makeTag("None found", "tag-ok");
+  }
+  head.append(name, countTag);
+  section.append(head, makeLine("issue-desc", description));
+
+  if (checked && list.length > 0) {
+    const ul = document.createElement("ul");
+    ul.className = "issue-list";
+
+    list.slice(0, MAX_ISSUE_ROWS).forEach((entry) => {
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = entry.title + (entry.username ? " (" + entry.username + ")" : "");
+      li.append(label, makeButton("Fix", () => openForm(entry)));
+      ul.appendChild(li);
+    });
+    section.appendChild(ul);
+
+    if (list.length > MAX_ISSUE_ROWS) {
+      section.appendChild(makeLine("issue-more", "and " + (list.length - MAX_ISSUE_ROWS) + " more"));
+    }
+  }
+
+  return section;
+}
+
+function renderDashboard() {
+  dashboardBody.replaceChildren();
+
+  if (entries.length === 0) {
+    dashboardBody.appendChild(makeLine("hint", "Add some entries to see your security score."));
+    return;
+  }
+
+  const result = analyzeVault();
+  const info = scoreInfo(result.score);
+
+  const row = document.createElement("div");
+  row.className = "score-row";
+
+  const number = document.createElement("span");
+  number.className = "score-number";
+  number.textContent = String(result.score);
+
+  const label = document.createElement("span");
+  label.className = "score-label";
+  label.textContent = info.label;
+
+  const bar = document.createElement("div");
+  bar.className = "score-bar";
+  const fill = document.createElement("div");
+  fill.className = "score-fill " + info.cls;
+  fill.style.width = result.score + "%";
+  bar.appendChild(fill);
+
+  row.append(number, label, bar);
+  dashboardBody.appendChild(row);
+
+  const breachChecked = breachResults.size > 0;
+
+  dashboardBody.appendChild(
+    buildIssue(
+      "Breached passwords",
+      breachChecked
+        ? "Found in known data breaches. Change these first."
+        : "Use Check for breaches above to scan your vault.",
+      result.breached,
+      breachChecked
+    )
+  );
+  dashboardBody.appendChild(
+    buildIssue(
+      "Reused passwords",
+      "The same password is on more than one entry. If one site is hacked, the others are at risk.",
+      result.reused,
+      true
+    )
+  );
+  dashboardBody.appendChild(
+    buildIssue(
+      "Weak passwords",
+      "Short or easy to guess. The generator can make a stronger one.",
+      result.weak,
+      true
+    )
+  );
+  dashboardBody.appendChild(
+    buildIssue(
+      "Old passwords",
+      "Not changed in over a year.",
+      result.old,
+      true
+    )
+  );
 }
 
 // ---------- Strength meter ----------
@@ -1109,4 +1324,5 @@ async function importCsv(text) {
 }
 
 // ---------- Start ----------
+applyTheme(getTheme());
 showScreen(loadMeta() ? "unlock" : "setup");
